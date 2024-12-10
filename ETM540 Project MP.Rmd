@@ -1,0 +1,149 @@
+---
+title: "ETM540 Project MP"
+author: "Manaswini"
+date: "2024-12-07"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library (kableExtra, quietly = TRUE)
+library (ROI, quietly = TRUE) # R Optimization Interface
+library (ROI.plugin.glpk, quietly = TRUE) # Plugin for solving
+library (ompr, quietly = TRUE) # Core ompr package
+library (ompr.roi, quietly = TRUE) # Glue for ompr to use ROI
+library (rsvg, quietly=TRUE)
+library(DiagrammeRsvg)
+library (devtools)
+library (TRA)
+library(lessR)
+library(dplyr)
+```
+
+## R Markdown
+
+
+
+```{r Read Data}
+combined_hospital_data <- Read("C:/Users/manas/Downloads/Sampled_Hospital_Data_OR.csv")
+```
+
+```{r Clean Data}
+data <- combined_hospital_data |>
+  mutate(
+    Number.of.Discharges = as.numeric(Number.of.Discharges),
+    Predicted.Readmission.Rate = as.numeric(Predicted.Readmission.Rate),
+    Score.y = as.numeric(Score.y)
+  ) |>
+  filter(
+    !is.na(Number.of.Discharges),
+    !is.na(Predicted.Readmission.Rate),
+    !is.na(Score.y),
+    Measure.Name.x == "READM-30-AMI-HRRP"
+  ) |>
+  mutate(Output = 1 - Score.y)
+cleaned_data <- data[1:25,]
+
+# Prepare inputs and outputs for DEA
+inputs <- as.matrix(cleaned_data[, c("Number.of.Discharges", "Predicted.Readmission.Rate")])
+outputs <- as.matrix(cleaned_data[, "Output", drop = FALSE])
+```
+
+
+```{r Sample Data}
+kbl (head(cbind(inputs, outputs)), booktabs=T,
+     caption="Simplified Data for University Technology Transfer") |>
+  kable_styling(latex_options = "hold_position")
+```
+
+```{r Prepare_Hospital_data}
+
+rownames(inputs)<-as.matrix(cleaned_data[,"Facility.Name.x"])
+rownames(outputs)<-as.matrix(cleaned_data[,"Facility.Name.x"])
+```
+
+``` {r}
+
+
+
+Xnames <- colnames(inputs)
+Ynames <- colnames(outputs)
+DMUnames <-as.matrix(cleaned_data[,"Facility.Name.x"])
+
+xdata <- inputs
+rownames(xdata)<-DMUnames
+
+ydata <- outputs
+rownames(ydata)<-DMUnames
+#inputs <- cbind(DMUnames, inputs)
+
+#dimnames(xdata)              <- c(list(DMUnames),Xnames)
+colnames(outputs)              <- Ynames
+
+ND <- nrow(inputs)  # Number of DMUs (hospitals)
+NX <- ncol(inputs)  # Number of inputs
+NY <- ncol(outputs)  # Number of outputs
+
+res.efficiency <- matrix(rep(-1.0, ND), nrow=ND, ncol=1)
+res.lambda     <- matrix(rep(-1.0, ND^2), nrow=ND,ncol=ND)
+dimnames(res.efficiency) <- c(list(DMUnames),"CCR-IO")
+dimnames(res.lambda)     <- c(list(DMUnames),list(DMUnames))
+
+#Define printable names to be used as appropriate
+ynames_printable<-c("Output")
+xnames_printable<-c("Number.of.Discharges","Predicted.Readmission.Rate")
+DMUnames_printable <- as.matrix(cleaned_data[,"Facility.Name.x"])
+```
+
+```{r}
+kbl (head(cbind(xdata,ydata)), booktabs=T,
+     caption="Selected Hospital Charecteristics.")
+```
+
+```{r Diagram}
+library (TRA) # Note, may need to install directly from github
+              # remotes::install_github("prof-anderson/TRA")
+
+Figure <- DrawIOdiagram (c("Number of Discharges\n Predicted Readmission Rate" ),
+                         c("Output"),
+                         '"\nHospital\n "')
+tmp<-capture.output(rsvg_png(charToRaw(export_svg(Figure)),
+                             'DEA_IO_hospital.PNG'))
+knitr::include_graphics("DEA_IO_hospital.PNG")
+
+```
+
+```{r utt_example1_CCR}
+RTS<-"CRS"
+for (k in 1:ND) {
+  modhosp_CCR <- MIPModel() |>
+    add_variable(vlambda[j], j = 1:ND, type = "continuous",
+                 lb = 0) |>
+    add_variable(vtheta, type = "continuous") |>
+    set_objective(vtheta, "min") |>
+    add_constraint(sum_expr(vlambda[j] * xdata[j,i], j = 1:ND)
+                   <= vtheta * xdata[k,i], i = 1:NX,
+                   .show_progress_bar=FALSE ) |>
+    add_constraint(sum_expr(vlambda[j] * ydata[j,r], j = 1:ND)
+                   >= ydata[k,r], r = 1:NY,
+                   .show_progress_bar=FALSE )
+    if (RTS=="VRS") {modhosp_CCR <- add_constraint(modhosp_CCR,
+                 sum_expr(vlambda[j], j = 1:ND) == 1) }  
+        #Returns to Scale
+  res <- solve_model(modhosp_CCR, with_ROI(solver = "glpk"))
+   
+  res.efficiency[k] <-  get_solution(res, vtheta)      
+  res.lambda[k,] <- t(as.matrix(as.numeric(
+                     get_solution(res, vlambda[j])[,3] )))
+}
+```
+
+```{r full-table}
+kbl (cbind(res.efficiency, poscol(res.lambda, cutoff=0.00001)),
+     booktabs=T, digits=4, escape=F,
+     caption="Results from Hosptal efficiency for READM-30-AMI-HRRP (CRS)") |>
+  kable_styling(latex_options =
+                  c("hold_position", "scale_down"))
+HOSPITAL_CCR.Res<-cbind(res.efficiency, res.lambda)
+```
+
